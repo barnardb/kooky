@@ -131,7 +131,6 @@ func FindAllCookieStores() []CookieStore {
 func ReadCookies(filters ...Filter) []*Cookie {
 	var ret []*Cookie
 
-	cs := make(chan []CookieStore)
 	c := make(chan *Cookie)
 	done := make(chan struct{})
 
@@ -143,39 +142,33 @@ func ReadCookies(filters ...Filter) []*Cookie {
 		close(done)
 	}()
 
-	// read cookies
-	go func() {
-		var wgcs sync.WaitGroup
-		for cookieStores := range cs {
-			for _, store := range cookieStores {
-				wgcs.Add(1)
-				go func(store CookieStore) {
-					defer wgcs.Done()
-					store.VisitCookies(func(cookie *Cookie, initializeValue CookieValueInitializer) error {
-						err := initializeValue(cookie)
-						if err != nil {
-							return err
-						}
-						c <- cookie
-						return nil
-					})
-				}(store)
-			}
-
-		}
-		wgcs.Wait()
-		close(c)
-	}()
-
-	// find cookie stores
+	// find cookies stores
+	var wgcs sync.WaitGroup
 	concurrentlyVisitCookieStoreFinders(func(finder CookieStoreFinder) {
 		cookieStores, err := finder.FindCookieStores()
-		if err == nil && cookieStores != nil {
-			cs <- cookieStores
+		if err != nil || cookieStores == nil {
+			return
+		}
+		wgcs.Add(len(cookieStores))
+		for _, store := range cookieStores {
+			go func(store CookieStore) {
+				defer wgcs.Done()
+				store.VisitCookies(func(cookie *Cookie, initializeValue CookieValueInitializer) error {
+					err := initializeValue(cookie)
+					if err != nil {
+						return err
+					}
+					if FilterCookie(cookie, filters...) {
+						c <- cookie
+					}
+					return nil
+				})
+			}(store)
 		}
 	})
-	close(cs)
+	wgcs.Wait()
 
+	close(c)
 	<-done
 
 	return ret
