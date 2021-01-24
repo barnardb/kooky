@@ -67,6 +67,20 @@ func RegisterFinder(browser string, finder CookieStoreFinder) {
 	}
 }
 
+func concurrentlyVisitCookieStoreFinders(visit func(finder CookieStoreFinder)) {
+	var wg sync.WaitGroup
+	muFinder.RLock()
+	defer muFinder.RUnlock()
+	wg.Add(len(finders))
+	for _, finder := range finders {
+		go func(finder CookieStoreFinder) {
+			defer wg.Done()
+			visit(finder)
+		}(finder)
+	}
+	wg.Wait()
+}
+
 // FindAllCookieStores() tries to find cookie stores at default locations.
 //
 // FindAllCookieStores() requires registered CookieStoreFinders.
@@ -81,9 +95,6 @@ func RegisterFinder(browser string, finder CookieStoreFinder) {
 func FindAllCookieStores() []CookieStore {
 	var ret []CookieStore
 
-	var wg sync.WaitGroup
-	wg.Add(len(finders))
-
 	c := make(chan []CookieStore)
 	done := make(chan struct{})
 
@@ -94,21 +105,14 @@ func FindAllCookieStores() []CookieStore {
 		close(done)
 	}()
 
-	muFinder.RLock()
-	defer muFinder.RUnlock()
-	for _, finder := range finders {
-		go func(finder CookieStoreFinder) {
-			defer wg.Done()
-			cookieStores, err := finder.FindCookieStores()
-			if err == nil && cookieStores != nil {
-				c <- cookieStores
-			}
-		}(finder)
-	}
+	concurrentlyVisitCookieStoreFinders(func(finder CookieStoreFinder) {
+		cookieStores, err := finder.FindCookieStores()
+		if err == nil && cookieStores != nil {
+			c <- cookieStores
+		}
+	})
 
-	wg.Wait()
 	close(c)
-
 	<-done
 
 	return ret
@@ -163,21 +167,13 @@ func ReadCookies(filters ...Filter) []*Cookie {
 		close(c)
 	}()
 
-	// find cookie store
-	var wgcsf sync.WaitGroup
-	muFinder.RLock()
-	defer muFinder.RUnlock()
-	wgcsf.Add(len(finders))
-	for _, finder := range finders {
-		go func(finder CookieStoreFinder) {
-			defer wgcsf.Done()
-			cookieStores, err := finder.FindCookieStores()
-			if err == nil && cookieStores != nil {
-				cs <- cookieStores
-			}
-		}(finder)
-	}
-	wgcsf.Wait()
+	// find cookie stores
+	concurrentlyVisitCookieStoreFinders(func(finder CookieStoreFinder) {
+		cookieStores, err := finder.FindCookieStores()
+		if err == nil && cookieStores != nil {
+			cs <- cookieStores
+		}
+	})
 	close(cs)
 
 	<-done
