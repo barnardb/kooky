@@ -67,18 +67,43 @@ func RegisterFinder(browser string, finder CookieStoreFinder) {
 	}
 }
 
-func concurrentlyVisitCookieStoreFinders(visit func(finder CookieStoreFinder)) {
+// ConcurrentlyVisitFinders invokes the visitor for each registered CookieStoreFinder
+//
+// The vistor may be invoked concurrently. ConcurrentlyVisitFinders waits until
+// all vistor invocations have completed before returning.
+func ConcurrentlyVisitFinders(visitor func(name string, finder CookieStoreFinder)) {
 	var wg sync.WaitGroup
 	muFinder.RLock()
 	defer muFinder.RUnlock()
 	wg.Add(len(finders))
-	for _, finder := range finders {
-		go func(finder CookieStoreFinder) {
+	for name, finder := range finders {
+		go func(name string, finder CookieStoreFinder) {
 			defer wg.Done()
-			visit(finder)
-		}(finder)
+			visitor(name, finder)
+		}(name, finder)
 	}
 	wg.Wait()
+}
+
+// ConcurrentlyVisitStores invokes the visitor CookieStore found by the finder
+//
+// The vistor may be invoked concurrently. ConcurrentlyVisitStores waits until
+// all vistor invocations have completed before returning.
+func ConcurrentlyVisitStores(finder CookieStoreFinder, visit func(CookieStore)) error {
+	cookieStores, err := finder.FindCookieStores()
+	if err != nil || cookieStores == nil {
+		return err
+	}
+	var wg sync.WaitGroup
+	wg.Add(len(cookieStores))
+	for _, cookieStore := range cookieStores {
+		go func(cookieStore CookieStore) {
+			defer wg.Done()
+			visit(cookieStore)
+		}(cookieStore)
+	}
+	wg.Wait()
+	return nil
 }
 
 // FindAllCookieStores() tries to find cookie stores at default locations.
@@ -94,27 +119,18 @@ func concurrentlyVisitCookieStoreFinders(visit func(finder CookieStoreFinder)) {
 //  import _ "github.com/zellyn/kooky/chrome"
 func FindAllCookieStores() []CookieStore {
 	var ret []CookieStore
-
-	c := make(chan []CookieStore)
-	done := make(chan struct{})
-
+	cookieStores := make(chan CookieStore)
 	go func() {
-		for cookieStores := range c {
-			ret = append(ret, cookieStores...)
-		}
-		close(done)
+		ConcurrentlyVisitFinders(func(name string, finder CookieStoreFinder) {
+			ConcurrentlyVisitStores(finder, func(store CookieStore) {
+				cookieStores <- store
+			})
+		})
+		close(cookieStores)
 	}()
-
-	concurrentlyVisitCookieStoreFinders(func(finder CookieStoreFinder) {
-		cookieStores, err := finder.FindCookieStores()
-		if err == nil && cookieStores != nil {
-			c <- cookieStores
-		}
-	})
-
-	close(c)
-	<-done
-
+	for cookieStore := range cookieStores {
+		ret = append(ret, cookieStore)
+	}
 	return ret
 }
 
@@ -130,46 +146,25 @@ func FindAllCookieStores() []CookieStore {
 //  import _ "github.com/zellyn/kooky/chrome"
 func ReadCookies(filters ...Filter) []*Cookie {
 	var ret []*Cookie
-
-	c := make(chan *Cookie)
-	done := make(chan struct{})
-
-	// append cookies
+	cookies := make(chan *Cookie)
 	go func() {
-		for cookie := range c {
-			ret = append(ret, cookie)
-		}
-		close(done)
-	}()
-
-	// find cookies stores
-	var wgcs sync.WaitGroup
-	concurrentlyVisitCookieStoreFinders(func(finder CookieStoreFinder) {
-		cookieStores, err := finder.FindCookieStores()
-		if err != nil || cookieStores == nil {
-			return
-		}
-		wgcs.Add(len(cookieStores))
-		for _, store := range cookieStores {
-			go func(store CookieStore) {
-				defer wgcs.Done()
+		ConcurrentlyVisitFinders(func(name string, finder CookieStoreFinder) {
+			ConcurrentlyVisitStores(finder, func(store CookieStore) {
 				store.VisitCookies(func(cookie *Cookie, initializeValue CookieValueInitializer) error {
-					err := initializeValue(cookie)
-					if err != nil {
+					if err := initializeValue(cookie); err != nil {
 						return err
 					}
 					if FilterCookie(cookie, filters...) {
-						c <- cookie
+						cookies <- cookie
 					}
 					return nil
 				})
-			}(store)
-		}
-	})
-	wgcs.Wait()
-
-	close(c)
-	<-done
-
+			})
+		})
+		close(cookies)
+	}()
+	for cookie := range cookies {
+		ret = append(ret, cookie)
+	}
 	return ret
 }
