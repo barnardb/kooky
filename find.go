@@ -128,13 +128,13 @@ func ReadCookies(filters ...Filter) []*Cookie {
 	var ret []*Cookie
 
 	cs := make(chan []CookieStore)
-	c := make(chan []*Cookie)
+	c := make(chan *Cookie)
 	done := make(chan struct{})
 
 	// append cookies
 	go func() {
-		for cookies := range c {
-			ret = append(ret, cookies...)
+		for cookie := range c {
+			ret = append(ret, cookie)
 		}
 		close(done)
 	}()
@@ -147,10 +147,14 @@ func ReadCookies(filters ...Filter) []*Cookie {
 				wgcs.Add(1)
 				go func(store CookieStore) {
 					defer wgcs.Done()
-					cookies, err := store.ReadCookies(filters...)
-					if err == nil && cookies != nil {
-						c <- cookies
-					}
+					store.VisitCookies(func(cookie *Cookie, initializeValue CookieValueInitializer) error {
+						err := initializeValue(cookie)
+						if err != nil {
+							return err
+						}
+						c <- cookie
+						return nil
+					})
 				}(store)
 			}
 
