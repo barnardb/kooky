@@ -4,10 +4,39 @@ import (
 	"sync"
 )
 
+// CookieValueInitializer initializes cookie values
+//
+// An initializer for a cookie value, used to defer expensive value
+// initialization (such as decryption).
+//
+// After this function returns without an error, the cookie's valua is ready to
+// be read. A cookie should not be passed to an initializer more than once, and
+// doing so may corrupt the cookie value.
+type CookieValueInitializer func(*Cookie) error
+
+// CookieValueAlreadyInitialized does nothing to the cookies that are past to it.
+func CookieValueAlreadyInitialized(*Cookie) error {
+	return nil
+}
+
+var _ CookieValueInitializer = CookieValueAlreadyInitialized
+
+// CookieVisitor is a function that visits cookies.
+//
+// The visitor should pass the cookie to the value initializer before reading
+// its value. This allows the visitor to avoid initializing the value if it
+// doesn't need to read the the value, which can greatly improve performance
+// for stores with encrypted values (such as Chrome's cookie database).
+//
+// If the visitor returns an error, the caller will stop visiting cookies and
+// propagate the error.
+type CookieVisitor func(*Cookie, CookieValueInitializer) error
+
 // CookieStore represents a file, directory, etc containing cookies.
 //
 // Call CookieStore.Close() after using any of its methods.
 type CookieStore interface {
+	VisitCookies(CookieVisitor) error
 	ReadCookies(...Filter) ([]*Cookie, error)
 	Browser() string
 	Profile() string

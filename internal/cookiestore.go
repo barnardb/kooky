@@ -15,7 +15,8 @@ type DefaultCookieStore struct {
 }
 
 /*
-DefaultCookieStore implements most of the kooky.CookieStore interface except for the ReadCookies method
+DefaultCookieStore implements most of the kooky.CookieStore interface except for the VisitCookies and ReadCookies methods
+func (s *DefaultCookieStore) VisitCookies(visit kooky.CookieVisitor) error
 func (s *DefaultCookieStore) ReadCookies(filters ...kooky.Filter) ([]*kooky.Cookie, error)
 
 DefaultCookieStore also provides an Open() method

@@ -58,34 +58,43 @@ func ReadCookies(filename string, filters ...kooky.Filter) ([]*kooky.Cookie, err
 }
 
 func (s *safariCookieStore) ReadCookies(filters ...kooky.Filter) ([]*kooky.Cookie, error) {
+	var cookies []*kooky.Cookie
+	return cookies, s.VisitCookies(func(cookie *kooky.Cookie, initializeValue kooky.CookieValueInitializer) error {
+		// we know the value doesn't need initialization
+		if kooky.FilterCookie(cookie, filters...) {
+			cookies = append(cookies, cookie)
+		}
+		return nil
+	})
+}
+
+func (s *safariCookieStore) VisitCookies(visit kooky.CookieVisitor) error {
 	if s == nil {
-		return nil, errors.New(`cookie store is nil`)
+		return errors.New(`cookie store is nil`)
 	}
 	if err := s.Open(); err != nil {
-		return nil, err
+		return err
 	} else if s.File == nil {
-		return nil, errors.New(`file is nil`)
+		return errors.New(`file is nil`)
 	}
-
-	var allCookies []*kooky.Cookie
 
 	var header fileHeader
 	err := binary.Read(s.File, binary.BigEndian, &header)
 	if err != nil {
-		return nil, fmt.Errorf("error reading header: %v", err)
+		return fmt.Errorf("error reading header: %v", err)
 	}
 	if string(header.Magic[:]) != "cook" {
-		return nil, fmt.Errorf("expected first 4 bytes to be %q; got %q", "cook", string(header.Magic[:]))
+		return fmt.Errorf("expected first 4 bytes to be %q; got %q", "cook", string(header.Magic[:]))
 	}
 
 	pageSizes := make([]int32, header.NumPages)
 	if err = binary.Read(s.File, binary.BigEndian, &pageSizes); err != nil {
-		return nil, fmt.Errorf("error reading page sizes: %v", err)
+		return fmt.Errorf("error reading page sizes: %v", err)
 	}
 
 	for i, pageSize := range pageSizes {
-		if allCookies, err = readPage(s.File, pageSize, allCookies); err != nil {
-			return nil, fmt.Errorf("error reading page %d: %v", i, err)
+		if err = readPage(s.File, pageSize, visit); err != nil {
+			return fmt.Errorf("error reading page %d: %v", i, err)
 		}
 	}
 
@@ -93,46 +102,46 @@ func (s *safariCookieStore) ReadCookies(filters ...kooky.Filter) ([]*kooky.Cooki
 	var checksum [8]byte
 	err = binary.Read(s.File, binary.BigEndian, &checksum)
 	if err != nil {
-		return nil, fmt.Errorf("error reading checksum: %v", err)
+		return fmt.Errorf("error reading checksum: %v", err)
 	}
 
-	// Filter cookies by specified filters.
-	cookies := kooky.FilterCookies(allCookies, filters...)
-
-	return cookies, nil
+	return nil
 }
 
-func readPage(f io.Reader, pageSize int32, cookies []*kooky.Cookie) ([]*kooky.Cookie, error) {
+func readPage(f io.Reader, pageSize int32, visit kooky.CookieVisitor) error {
 	bb := make([]byte, pageSize)
 	if _, err := io.ReadFull(f, bb); err != nil {
-		return nil, err
+		return err
 	}
 	r := bytes.NewReader(bb)
 
 	var header pageHeader
 	if err := binary.Read(r, binary.LittleEndian, &header); err != nil {
-		return nil, fmt.Errorf("error reading header: %v", err)
+		return fmt.Errorf("error reading header: %v", err)
 	}
 	want := [4]byte{0x00, 0x00, 0x01, 0x00}
 	if header.Header != want {
-		return nil, fmt.Errorf("expected first 4 bytes of page to be %v; got %v", want, header.Header)
+		return fmt.Errorf("expected first 4 bytes of page to be %v; got %v", want, header.Header)
 	}
 
 	cookieOffsets := make([]int32, header.NumCookies)
 	if err := binary.Read(r, binary.LittleEndian, &cookieOffsets); err != nil {
-		return nil, fmt.Errorf("error reading cookie offsets: %v", err)
+		return fmt.Errorf("error reading cookie offsets: %v", err)
 	}
 
 	for i, cookieOffset := range cookieOffsets {
 		r.Seek(int64(cookieOffset), io.SeekStart)
 		cookie, err := readCookie(r)
 		if err != nil {
-			return nil, fmt.Errorf("cookie %d: %v", i, err)
+			return fmt.Errorf("cookie %d: %v", i, err)
 		}
-		cookies = append(cookies, cookie)
+		err = visit(cookie, kooky.CookieValueAlreadyInitialized)
+		if err != nil {
+			return err
+		}
 	}
 
-	return cookies, nil
+	return nil
 }
 
 func readCookie(r io.ReadSeeker) (*kooky.Cookie, error) {

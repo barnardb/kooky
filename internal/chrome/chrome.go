@@ -19,22 +19,42 @@ import (
 // Thanks to https://gist.github.com/dacort/bd6a5116224c594b14db
 
 func (s *CookieStore) ReadCookies(filters ...kooky.Filter) ([]*kooky.Cookie, error) {
+	var cookies []*kooky.Cookie
+	return cookies, s.VisitCookies(func(cookie *kooky.Cookie, initializeValue kooky.CookieValueInitializer) error {
+		if err := initializeValue(cookie); err != nil {
+			return err
+		}
+		if kooky.FilterCookie(cookie, filters...) {
+			cookies = append(cookies, cookie)
+		}
+		return nil
+	})
+}
+
+func (s *CookieStore) VisitCookies(visit kooky.CookieVisitor) error {
 	if s == nil {
-		return nil, errors.New(`cookie store is nil`)
+		return errors.New(`cookie store is nil`)
 	}
 	if err := s.Open(); err != nil {
-		return nil, err
+		return err
 	} else if s.Database == nil {
-		return nil, errors.New(`database is nil`)
+		return errors.New(`database is nil`)
 	}
 
-	var cookies []*kooky.Cookie
+	decryptValue := func(cookie *kooky.Cookie) error {
+		value, err := s.decrypt([]byte(cookie.Value))
+		if err != nil {
+			return fmt.Errorf("decrypting cookie %v: %w", cookie, err)
+		}
+		cookie.Value = string(value)
+		return nil
+	}
 
 	headerMappings := map[string]string{
 		"secure":   "is_secure",
 		"httponly": "is_httponly",
 	}
-	err := utils.VisitTableRows(s.Database, `cookies`, headerMappings, func(rowID *int64, row utils.TableRow) error {
+	return utils.VisitTableRows(s.Database, `cookies`, headerMappings, func(rowID *int64, row utils.TableRow) error {
 		/*
 			-- taken from chrome 80's cookies' sqlite_master
 			CREATE TABLE cookies(
@@ -101,29 +121,16 @@ func (s *CookieStore) ReadCookies(filters ...kooky.Filter) ([]*kooky.Cookie, err
 		if err != nil {
 			return err
 		} else if len(encrypted_value) > 0 {
-			if decrypted, err := s.decrypt(encrypted_value); err == nil {
-				cookie.Value = string(decrypted)
-			} else {
-				return fmt.Errorf("decrypting cookie %v: %w", cookie, err)
-			}
+			cookie.Value = string(encrypted_value)
+			return visit(cookie, decryptValue)
 		} else {
 			cookie.Value, err = row.String(`value`)
 			if err != nil {
 				return err
 			}
+			return visit(cookie, kooky.CookieValueAlreadyInitialized)
 		}
-
-		if kooky.FilterCookie(cookie, filters...) {
-			cookies = append(cookies, cookie)
-		}
-
-		return nil
 	})
-	if err != nil {
-		return nil, err
-	}
-
-	return cookies, nil
 }
 
 // "mock_password" from https://github.com/chromium/chromium/blob/34f6b421d6d255b27e01d82c3c19f49a455caa06/crypto/mock_apple_keychain.cc#L75

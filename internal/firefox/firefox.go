@@ -12,18 +12,27 @@ import (
 )
 
 func (s *CookieStore) ReadCookies(filters ...kooky.Filter) ([]*kooky.Cookie, error) {
+	var cookies []*kooky.Cookie
+	return cookies, s.VisitCookies(func(cookie *kooky.Cookie, initializeValue kooky.CookieValueInitializer) error {
+		// we know the value doesn't need initialization
+		if kooky.FilterCookie(cookie, filters...) {
+			cookies = append(cookies, cookie)
+		}
+		return nil
+	})
+}
+
+func (s *CookieStore) VisitCookies(visit kooky.CookieVisitor) error {
 	if s == nil {
-		return nil, errors.New(`cookie store is nil`)
+		return errors.New(`cookie store is nil`)
 	}
 	if err := s.Open(); err != nil {
-		return nil, err
+		return err
 	} else if s.Database == nil {
-		return nil, errors.New(`database is nil`)
+		return errors.New(`database is nil`)
 	}
 
-	var cookies []*kooky.Cookie
-
-	err := utils.VisitTableRows(s.Database, `moz_cookies`, map[string]string{}, func(rowId *int64, row utils.TableRow) error {
+	return utils.VisitTableRows(s.Database, `moz_cookies`, map[string]string{}, func(rowId *int64, row utils.TableRow) error {
 		/*
 			-- Firefox 78 ESR - copied from sqlitebrowser
 			CREATE TABLE moz_cookies(
@@ -108,15 +117,6 @@ func (s *CookieStore) ReadCookies(filters ...kooky.Filter) ([]*kooky.Cookie, err
 			return err
 		}
 
-		if kooky.FilterCookie(&cookie, filters...) {
-			cookies = append(cookies, &cookie)
-		}
-
-		return nil
+		return visit(&cookie, kooky.CookieValueAlreadyInitialized)
 	})
-	if err != nil {
-		return nil, err
-	}
-
-	return cookies, nil
 }
