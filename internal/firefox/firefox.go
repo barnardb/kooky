@@ -91,7 +91,7 @@ func (s *CookieStore) ReadCookies(filters ...kooky.Filter) ([]*kooky.Cookie, err
 
 		// Creation
 		if creationTime, err := row.Int64(`creationTime`); err == nil {
-			cookie.Creation = time.Unix(creationTime/1e6, 0) // drop nanoseconds
+			cookie.Creation = time.Unix(creationTime/1e6, creationTime%1e6)
 		} else {
 			return err
 		}
